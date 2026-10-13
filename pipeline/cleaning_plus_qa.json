@@ -1,0 +1,576 @@
+{
+  "name": "KB Text Cleaning + QA (optional)",
+  "description": "Portable DataFlow-WebUI pipeline: MinerU parse → chunk → stitch tables → LLM clean → quality metrics/filter → export knowledge-base JSONL. Then generate and filter factual QA pairs.",
+  "placeholders": {
+    "LLM_SERVING_ID": "Your WebUI Serving Manager id for APILLMServing_request",
+    "INTERMEDIATE_DIR": "MinerU intermediate dir, e.g. backend/data/kbc_user_papers",
+    "KB_EXPORT_PATH": "Output JSONL, e.g. backend/data/kb_corpus/cleaned_corpus.jsonl"
+  },
+  "input_dataset": {
+    "format": "jsonl",
+    "required_columns": [
+      "source",
+      "kind"
+    ],
+    "comment": "source = PDF path or markdown path; kind = pdf | markdown"
+  },
+  "tags": [
+    "cleaning",
+    "kb",
+    "portable",
+    "dataflow-webui"
+  ],
+  "version": "1.0.0",
+  "source_pipeline_name": "CNKI 院发论文 全量199",
+  "config": {
+    "file_path": "",
+    "input_dataset": {
+      "id": null,
+      "location": [
+        40.0,
+        40.0
+      ],
+      "comment": "Register samples/input.jsonl (or your own list) in Data Preparation first."
+    },
+    "operators": [
+      {
+        "name": "FileOrURLToMarkdownConverterAPI",
+        "params": {
+          "init": [
+            {
+              "name": "intermediate_dir",
+              "default_value": "intermediate",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "{{INTERMEDIATE_DIR}}"
+            },
+            {
+              "name": "mineru_backend",
+              "default_value": "vlm",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "vlm"
+            },
+            {
+              "name": "api_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "input_key",
+              "default_value": "source",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "source"
+            },
+            {
+              "name": "output_key",
+              "default_value": "text_path",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "text_path"
+            }
+          ]
+        },
+        "location": [
+          360.0,
+          40.0
+        ],
+        "comment": "PDF via MinerU; TXT files pass through as markdown."
+      },
+      {
+        "name": "KBCChunkGenerator",
+        "params": {
+          "init": [
+            {
+              "name": "chunk_size",
+              "default_value": 512,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": 1600
+            },
+            {
+              "name": "chunk_overlap",
+              "default_value": 50,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": 240
+            },
+            {
+              "name": "split_method",
+              "default_value": "token",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "recursive"
+            },
+            {
+              "name": "min_tokens_per_chunk",
+              "default_value": 100,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": 80
+            },
+            {
+              "name": "tokenizer_name",
+              "default_value": "bert-base-uncased",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "bert-base-uncased"
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "input_key",
+              "default_value": "text_path",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "text_path"
+            },
+            {
+              "name": "output_key",
+              "default_value": "raw_chunk",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "raw_chunk"
+            }
+          ]
+        },
+        "location": [
+          680.0,
+          40.0
+        ],
+        "comment": "Split markdown into ~1600-char chunks with 240 overlap so cut sentences still share context."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "def stitch_broken_tables(df):\n    import pandas as pd\n    if df is None or getattr(df, \"empty\", True) or \"raw_chunk\" not in df.columns:\n        return df\n    def broken(text):\n        t = str(text or \"\")\n        low = t.lower()\n        s = t.lstrip().lower()\n        if low.count(\"<table\") > low.count(\"</table\"):\n            return True\n        return s.startswith((\"td>\", \"/td>\", \"tr>\", \"/tr>\", \"</td\", \"</tr\", \"th>\", \"/th>\"))\n    out = []\n    buf = None\n    for rec in df.to_dict(orient=\"records\"):\n        text = str(rec.get(\"raw_chunk\") or \"\")\n        if buf is None:\n            buf = rec\n            continue\n        prev = str(buf.get(\"raw_chunk\") or \"\")\n        same = buf.get(\"source\") == rec.get(\"source\")\n        if same and (broken(prev) or broken(text)) and (len(prev) + len(text) < 12000):\n            merged = dict(buf)\n            merged[\"raw_chunk\"] = prev + \"\\n\" + text\n            buf = merged\n        else:\n            out.append(buf)\n            buf = rec\n    if buf is not None:\n        out.append(buf)\n    return pd.DataFrame(out)\n"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          1000.0,
+          40.0
+        ],
+        "comment": "Merge consecutive chunks when an HTML table was split."
+      },
+      {
+        "name": "KBCTextCleaner",
+        "params": {
+          "init": [
+            {
+              "name": "llm_serving",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "{{LLM_SERVING_ID}}"
+            },
+            {
+              "name": "lang",
+              "default_value": "en",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "zh"
+            },
+            {
+              "name": "prompt_template",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": {
+                "cls_name": "KnowledgeCleanerPrompt",
+                "lang": "zh",
+                "params": []
+              }
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "input_key",
+              "default_value": "raw_chunk",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "raw_chunk"
+            },
+            {
+              "name": "output_key",
+              "default_value": "cleaned_chunk",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "cleaned_chunk"
+            }
+          ]
+        },
+        "location": [
+          1000.0,
+          760.0
+        ],
+        "comment": "LLM-clean text; keep numbers, units, and tables."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "def prepare_kb_chunks(df):\n    import hashlib\n    import re\n    from pathlib import Path\n    if df is None or getattr(df, \"empty\", True):\n        return df\n    out = df.copy()\n    num_re = re.compile(r\"\\d+(?:\\.\\d+)?\")\n    table_re = re.compile(r\"<table\\b.*?</table>\", re.I | re.S)\n    cell_re = re.compile(r\"<t[hd][^>]*>(.*?)</t[hd]>\", re.I | re.S)\n    row_re = re.compile(r\"<tr[^>]*>(.*?)</tr>\", re.I | re.S)\n    tag_re = re.compile(r\"<[^>]+>\")\n\n    def table_to_md(table_html):\n        grid = []\n        for row in row_re.findall(table_html):\n            cells = [tag_re.sub(\"\", c).replace(\"\\n\", \" \").strip() for c in cell_re.findall(row)]\n            if cells:\n                grid.append(cells)\n        if not grid:\n            return tag_re.sub(\"\", table_html).strip()\n        width = max(len(r) for r in grid)\n        for row in grid:\n            while len(row) < width:\n                row.append(\"\")\n        lines = [\n            \"| \" + \" | \".join(grid[0]) + \" |\",\n            \"| \" + \" | \".join([\"---\"] * width) + \" |\",\n        ]\n        for row in grid[1:]:\n            lines.append(\"| \" + \" | \".join(row) + \" |\")\n        return \"\\n\".join(lines)\n\n    def html_tables_to_md(text):\n        t = str(text or \"\")\n        if \"<table\" not in t.lower():\n            return t\n        return table_re.sub(lambda m: \"\\n\" + table_to_md(m.group(0)) + \"\\n\", t)\n\n    def meta(source, kind):\n        path = str(source or \"\")\n        name = Path(path).stem\n        low = path.lower()\n        if (\"官微\" in path) or (\"官网\" in path) or (\"wechat\" in low):\n            doc_type = \"wechat\"\n        elif (\"cnki\" in low) or str(kind or \"\").lower() == \"pdf\":\n            doc_type = \"cnki\"\n        else:\n            doc_type = str(kind or \"unknown\")\n        date_m = re.search(r\"(19|20)\\d{2}-\\d{2}-\\d{2}\", name)\n        year_m = re.search(r\"(19|20)\\d{2}\", path)\n        date = date_m.group(0) if date_m else \"\"\n        year = date[:4] if date else (year_m.group(0) if year_m else \"\")\n        title = name\n        if date:\n            title = name.split(date, 1)[-1].lstrip(\"_- \")\n        return doc_type, year, date, title\n\n    cleaned_src = out[\"cleaned_chunk\"] if \"cleaned_chunk\" in out.columns else \"\"\n    raw_src = out[\"raw_chunk\"] if \"raw_chunk\" in out.columns else \"\"\n    kb_text = []\n    fidelity = []\n    invented = []\n    kb_ids = []\n    doc_types = []\n    years = []\n    dates = []\n    titles = []\n    kinds = out[\"kind\"] if \"kind\" in out.columns else [\"\"] * len(out)\n    sources = out[\"source\"] if \"source\" in out.columns else [\"\"] * len(out)\n    for i, (cleaned, raw, source, kind) in enumerate(zip(cleaned_src, raw_src, sources, kinds)):\n        text = html_tables_to_md(cleaned)\n        kb_text.append(text)\n        raw_nums = set(num_re.findall(str(raw or \"\")))\n        new_nums = sorted(set(num_re.findall(text)) - raw_nums)\n        invented.append(\",\".join(new_nums))\n        fidelity.append(len(new_nums) == 0)\n        doc_type, year, date, title = meta(source, kind)\n        doc_types.append(doc_type)\n        years.append(year)\n        dates.append(date)\n        titles.append(title)\n        digest = hashlib.sha1((str(source) + \"\\n\" + text).encode(\"utf-8\", \"ignore\")).hexdigest()[:16]\n        kb_ids.append(digest)\n    out[\"cleaned_chunk\"] = kb_text\n    out[\"kb_text\"] = kb_text\n    out[\"fidelity_ok\"] = fidelity\n    out[\"invented_numbers\"] = invented\n    out[\"doc_type\"] = doc_types\n    out[\"year\"] = years\n    out[\"doc_date\"] = dates\n    out[\"title\"] = titles\n    out[\"kb_id\"] = kb_ids\n    return out\n"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          680.0,
+          760.0
+        ],
+        "comment": "Convert HTML tables to Markdown; add source metadata; flag numbers invented during cleaning."
+      },
+      {
+        "name": "NgramSampleEvaluator",
+        "params": {
+          "init": [
+            {
+              "name": "ngrams",
+              "default_value": 5,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": 5
+            },
+            {
+              "name": "language",
+              "default_value": "en",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "zh"
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "input_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "cleaned_chunk"
+            },
+            {
+              "name": "output_key",
+              "default_value": "NgramScore",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "NgramScore"
+            }
+          ]
+        },
+        "location": [
+          360.0,
+          760.0
+        ],
+        "comment": "Score repetition in cleaned chunks (NgramScore)."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "lambda df: df.assign(LineDupRatio=df[\"cleaned_chunk\"].fillna(\"\").map(lambda t: (lambda lines: ((len(lines) - len(set(lines))) / float(len(lines))) if lines else 0.0)([x.strip() for x in str(t).splitlines() if x.strip()])), NgramRepeatRatio=(1 - df[\"NgramScore\"].fillna(0)).clip(lower=0, upper=1), kb_ok=df[\"cleaned_chunk\"].fillna(\"\").map(lambda t: len(str(t).strip()) >= 80))"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          40.0,
+          760.0
+        ],
+        "comment": "Add LineDupRatio, NgramRepeatRatio, and kb_ok."
+      },
+      {
+        "name": "GeneralFilter",
+        "params": {
+          "init": [
+            {
+              "name": "filter_rules",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "lambda df: df[\"cleaned_chunk\"].fillna(\"\").astype(str).str.len() >= 80",
+                "lambda df: ~df[\"cleaned_chunk\"].fillna(\"\").astype(str).str.contains(\"/*...*/\", regex=False)",
+                "lambda df: ~df[\"cleaned_chunk\"].fillna(\"\").astype(str).str.lstrip().str.lower().str.startswith((\"td>\", \"/td>\", \"tr>\", \"/tr>\"))",
+                "lambda df: df[\"cleaned_chunk\"].fillna(\"\").astype(str).map(lambda t: t.lower().count(\"<table\") <= t.lower().count(\"</table\"))",
+                "lambda df: df[\"NgramScore\"].fillna(1) >= 0.65",
+                "lambda df: df[\"LineDupRatio\"].fillna(0) <= 0.4",
+                "lambda df: df[\"fidelity_ok\"].fillna(False)"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          40.0,
+          1480.0
+        ],
+        "comment": "Drop short, broken, placeholder, high-duplication, or number-inventing chunks."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "def keep_body_chunks(df):\n    import re\n    if df is None or getattr(df, \"empty\", True) or \"cleaned_chunk\" not in df.columns:\n        return df\n    def keep(text):\n        t = str(text or \"\").strip()\n        if len(t) < 80:\n            return False\n        cites = len(re.findall(r\"\\[\\d+\\]\", t))\n        if cites >= 4 and len(t) < 700:\n            return False\n        if t.lstrip().startswith((\"参考文献\",)) and cites >= 2:\n            return False\n        if t.count(\"$^{\") >= 6 and len(t) < 450:\n            return False\n        if re.match(r\"^[\\s,A-Za-z\\-\\.]+\\$\\{\\^\", t) and len(t) < 350:\n            return False\n        return True\n    return df.loc[df[\"cleaned_chunk\"].map(keep)].reset_index(drop=True)\n"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          360.0,
+          1480.0
+        ],
+        "comment": "Drop bibliography, author-only, and other non-body chunks before knowledge-base export."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "def export_kb_corpus(df):\n    import re\n    from pathlib import Path\n    if df is None:\n        return df\n    out = df.copy()\n    if getattr(out, \"empty\", True):\n        out[\"kb_exported\"] = False\n        out[\"kb_export_path\"] = \"\"\n        return out\n    if \"kb_text\" not in out.columns:\n        out[\"kb_text\"] = out[\"cleaned_chunk\"] if \"cleaned_chunk\" in out.columns else \"\"\n    out[\"_i\"] = range(len(out))\n    out[\"_h\"] = out[\"kb_text\"].fillna(\"\").map(lambda t: re.sub(r\"\\s+\", \"\", str(t).lower())[:800])\n    if \"doc_type\" in out.columns:\n        out[\"_rank\"] = out[\"doc_type\"].map(lambda x: 0 if str(x) == \"cnki\" else 1)\n    else:\n        out[\"_rank\"] = 1\n    blank = out[\"_h\"].eq(\"\")\n    ranked = out.loc[~blank].sort_values([\"_rank\", \"_i\"], kind=\"stable\")\n    keep_idx = set(ranked.loc[~ranked[\"_h\"].duplicated(keep=\"first\")].index)\n    keep_idx.update(out.loc[blank].index)\n    out = out.loc[out.index.isin(keep_idx)].sort_values(\"_i\", kind=\"stable\")\n    out = out.drop(columns=[\"_i\", \"_h\", \"_rank\"]).reset_index(drop=True)\n    path = Path(r\"{{KB_EXPORT_PATH}}\")\n    path.parent.mkdir(parents=True, exist_ok=True)\n    cols = [c for c in (\n        \"kb_id\", \"source\", \"kind\", \"doc_type\", \"year\", \"doc_date\", \"title\",\n        \"text_path\", \"kb_text\", \"cleaned_chunk\", \"NgramScore\", \"LineDupRatio\",\n        \"fidelity_ok\", \"invented_numbers\",\n    ) if c in out.columns]\n    out.loc[:, cols].to_json(path, orient=\"records\", lines=True, force_ascii=False)\n    out[\"kb_exported\"] = True\n    out[\"kb_export_path\"] = str(path)\n    return out\n"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          680.0,
+          1480.0
+        ],
+        "comment": "Write kept body chunks to the knowledge-base JSONL; QA continues on these rows and cannot delete them."
+      },
+      {
+        "name": "Text2QAGenerator",
+        "params": {
+          "init": [
+            {
+              "name": "llm_serving",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "{{LLM_SERVING_ID}}"
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "input_key",
+              "default_value": "text",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "cleaned_chunk"
+            },
+            {
+              "name": "input_question_num",
+              "default_value": 1,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": 2
+            },
+            {
+              "name": "output_prompt_key",
+              "default_value": "generated_prompt",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "generated_prompt"
+            },
+            {
+              "name": "output_question_key",
+              "default_value": "generated_question",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "generated_question"
+            },
+            {
+              "name": "output_answer_key",
+              "default_value": "generated_answer",
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "generated_answer"
+            }
+          ]
+        },
+        "location": [
+          1000.0,
+          1480.0
+        ],
+        "comment": "Generate up to 2 Simplified-Chinese factual QA pairs per kept body chunk."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "def refine_qa_pairs(df):\n    import re\n    if df is None or getattr(df, \"empty\", True):\n        return df\n    if \"generated_question\" not in df.columns or \"generated_answer\" not in df.columns:\n        return df\n    out = df.copy()\n\n    def norm(s):\n        s = str(s or \"\")\n        s = re.sub(r\"\\s+\", \"\", s)\n        for a, b in ((\"（\", \"(\"), (\"）\", \")\"), (\"，\", \",\"), (\"。\", \"\"), (\"、\", \"\"), (\"：\", \":\"), (\"；\", \";\")):\n            s = s.replace(a, b)\n        return s.lower()\n\n    def abstain(ans):\n        a = str(ans or \"\")\n        return any(x in a for x in (\"未提及\", \"未给出\", \"原文没有\", \"无法从原文\", \"不知道\", \"原文未\"))\n\n    def grounded(row):\n        chunk = str(row.get(\"cleaned_chunk\") or row.get(\"kb_text\") or \"\")\n        question = str(row.get(\"generated_question\") or \"\")\n        ans = str(row.get(\"generated_answer\") or \"\")\n        if not ans.strip() or abstain(ans):\n            return False\n        nchunk, nans = norm(chunk), norm(ans)\n        if len(nans) >= 2 and nans in nchunk:\n            return True\n        nums = re.findall(r\"\\d+(?:\\.\\d+)?\", ans)\n        if nums and not all(n in chunk for n in nums):\n            return False\n        latin = re.findall(r\"[A-Za-z][A-Za-z0-9\\-]{1,}\", ans)\n        cl = chunk.lower()\n        if latin and all(tok.lower() in cl for tok in latin):\n            return True\n        q_latin = re.findall(r\"[A-Za-z][A-Za-z0-9\\-]{1,}\", question)\n        ascii_ratio = sum(ch.isascii() and not ch.isspace() for ch in chunk) / float(max(len(chunk), 1))\n        if ascii_ratio > 0.65 and any(tok.lower() in cl for tok in (latin + q_latin)):\n            return True\n        hans = re.findall(r\"[\\u4e00-\\u9fff]+\", ans)\n        grams = []\n        for h in hans:\n            if len(h) == 1:\n                grams.append(h)\n            else:\n                grams.extend(h[i:i + 2] for i in range(len(h) - 1))\n        if grams:\n            hit = sum(1 for g in grams if g in chunk)\n            return (hit / float(len(grams))) >= 0.5\n        return bool(nums)\n\n    out = out.loc[out.apply(grounded, axis=1)].copy()\n    if getattr(out, \"empty\", True):\n        return out.reset_index(drop=True)\n    if \"source\" in out.columns:\n        src = out[\"source\"].fillna(\"\").astype(str)\n    else:\n        src = out.index.astype(str)\n    qkey = out[\"generated_question\"].fillna(\"\").astype(str).map(norm)\n    key = src + chr(31) + qkey\n    return out.loc[~key.duplicated(keep=\"first\")].reset_index(drop=True)\n"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            }
+          ]
+        },
+        "location": [
+          1000.0,
+          2200.0
+        ],
+        "comment": "Keep QA pairs verifiable from the current chunk; drop abstentions and near-duplicate questions."
+      },
+      {
+        "name": "PandasOperator",
+        "params": {
+          "init": [
+            {
+              "name": "process_fn",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": [
+                "def wrap_qa_pairs(df):\n    import pandas as pd\n    if df is None:\n        return df\n    out = df.copy()\n    for col in (\"generated_question\", \"generated_answer\"):\n        if col not in out.columns:\n            out[col] = pd.Series(dtype=\"object\")\n    if getattr(out, \"empty\", True):\n        out[\"QA_pairs\"] = pd.Series(dtype=\"object\")\n        return out\n    out[\"QA_pairs\"] = [[{\"question\": str(q), \"answer\": str(a), \"type\": \"factual\"}] for q, a in zip(out[\"generated_question\"].fillna(\"\"), out[\"generated_answer\"].fillna(\"\"))]\n    return out\n"
+              ]
+            }
+          ],
+          "run": [
+            {
+              "name": "storage",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": ""
+            },
+            {
+              "name": "output_key",
+              "default_value": null,
+              "kind": "POSITIONAL_OR_KEYWORD",
+              "value": "QA_pairs"
+            }
+          ]
+        },
+        "location": [
+          680.0,
+          2200.0
+        ],
+        "comment": "Wrap each remaining QA pair into QA_pairs for the review page."
+      }
+    ]
+  }
+}
