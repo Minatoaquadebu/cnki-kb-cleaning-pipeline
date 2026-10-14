@@ -1,0 +1,3 @@
+# Minimal deps to unit-test process_fns without the full WebUI stack.
+pandas>=1.5
+pytest>=7.0

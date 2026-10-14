@@ -1,23 +1,25 @@
 # KB Text Cleaning Pipeline（可移植包）
 
-把 PDF / Markdown 论文清洗成可检索的知识库 JSONL，可在 [DataFlow-WebUI](https://github.com/) 中直接导入使用。
+把 PDF / Markdown 论文清洗成可检索的知识库 JSONL，可在 DataFlow-WebUI 中直接导入使用。
 
 本包从院发 CNKI 清洗实践中抽离，**不含 API Key、不含本机绝对路径、不含真实论文原文**。样例文本为虚构演示数据。
+
+**版本 2.0.0（kb-clean-2.0）**：中文 tokenizer、数字保真软闸门、SimHash 近重、增量合并导出、元数据/溯源字段；`process_fns/` 为唯一源码真相，改完后必须 `python scripts/sync_process_fns.py`。
 
 ## 管线做什么
 
 默认使用 `pipeline/cleaning_only.json`（10 步）：
 
 1. **FileOrURLToMarkdownConverterAPI** — PDF 经 MinerU 转 Markdown（已有 md 可跳过解析逻辑，直接给 `text_path`）
-2. **KBCChunkGenerator** — 约 1600 字块、240 重叠、recursive
+2. **KBCChunkGenerator** — `bert-base-chinese`，`chunk_size`/`chunk_overlap` 为 **token** 预算（默认 1600/240），recursive
 3. **stitch_broken_tables** — 合并被切断的 HTML 表
 4. **KBCTextCleaner** — LLM 清洗（中文 `KnowledgeCleanerPrompt`）
-5. **prepare_kb_chunks** — 表转 Markdown、元数据、数字保真检查
+5. **prepare_kb_chunks** — 表转 MD、元数据、页眉页脚/乱码轻清理、数字保真（归一化后软判定）
 6. **NgramSampleEvaluator** — 重复度评分
 7. 质量指标列 — `LineDupRatio` / `NgramRepeatRatio` / `kb_ok`
-8. **GeneralFilter** — 丢掉过短、破表、高重复、编造数字的块
-9. **keep_body_chunks** — 丢掉参考文献等非正文块
-10. **export_kb_corpus** — 导出知识库 JSONL
+8. **GeneralFilter** — 丢掉过短、破表、高重复；仅丢弃 **严重** 数字编造（`fidelity_severe`）
+9. **keep_body_chunks** — 丢掉参考文献（中/英）与公式噪声块
+10. **export_kb_corpus** — 精确+SimHash 去重，按 `kb_id` **增量合并** 导出，写入 `pipeline_version`/`parser`
 
 可选：`pipeline/cleaning_plus_qa.json` 在导出后再做 Text2QA + 过滤（多消耗 LLM 调用）。
 
@@ -127,23 +129,46 @@ WebUI → **Serving Manager** → 新建 `APILLMServing_request`：
 cnki-kb-cleaning-pipeline/
   README.md
   LICENSE
+  requirements.txt           # 仅单测依赖（pandas/pytest）
   pipeline/
-    cleaning_only.json       # 清洗导出（推荐）
-    cleaning_plus_qa.json    # 清洗 + QA
-    process_fns/             # Pandas 步骤源码（只读参考）
+    cleaning_only.json       # 由 sync 从 process_fns 生成内联代码
+    cleaning_plus_qa.json
+    process_fns/             # ★ 唯一源码真相（改这里）
+  tests/
+    test_process_fns.py
   samples/
-    markdown/sample_paper.md # 虚构样例
-    input.jsonl              # 占位
+    markdown/sample_paper.md
+    input.jsonl
   scripts/
-    prepare_sample_dataset.py
+    sync_process_fns.py      # process_fns → JSON
     materialize_pipeline.py
     import_into_webui.py
+    prepare_sample_dataset.py
+    patch_local_webui_pipelines.py  # 可选：同步到本机 WebUI registry
+```
+
+## 修改 process_fn 后
+
+```bash
+python scripts/sync_process_fns.py
+python -m pytest tests/ -q
+```
+
+再 `materialize` / 导入。不要只改 JSON 里转义字符串。
+
+## 单测
+
+```bash
+pip install -r requirements.txt
+python -m pytest tests/ -q
 ```
 
 ## 注意
 
+- 导出为按 `kb_id` 合并；若要全新文件请换 `--export-path` 或先删旧 JSONL。
+- 元数据仍以文件名 + 块内浅层字段为主；PDF 内嵌 bibliographic 解析未做完整 Crossref 级抽取。
+- LLM 步骤仍受 Serving/Ray 调度约束；后处理已去掉脆弱硬删，但不是多进程并行重写。
 - 历史任务的 DeepSeek 缓存命中率不会出现在本包里；那是 WebUI Serving 运行时统计。
-- 清洗效果依赖你选的 LLM；本地 27B 与云端模型结果会不同。
 - 请勿上传他人版权论文或密钥到公开仓库。
 
 ## 许可证
